@@ -21,9 +21,6 @@
     <None Update="server.key">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
-    <None Update="server.pfx">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </None>
     <None Update="service1.crt">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>

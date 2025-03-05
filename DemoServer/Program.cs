@@ -1,43 +1,8 @@
-
 using Microsoft.AspNetCore.Authentication.Certificate;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
-using System.Buffers;
-using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
-using System.Text;
-
-// Abre una terminal y ejecuta los siguientes comandos para generar los certificados:
-// 
-// 1. Crear la clave privada de la CA
-// openssl genrsa -out ca.key 4096
-// 
-// 2. Crear el certificado de la CA
-// openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 -out ca.crt -subj "/CN=MyCA"
-// 
-// 3. Crear la clave privada del servidor
-// openssl genrsa -out server.key 2048
-// 
-// 4. Crear una solicitud de firma de certificado (CSR) del servidor
-// openssl req -new -key server.key -out server.csr -subj "/CN=localhost"
-// 
-// 5. Firmar el certificado del servidor con la CA
-// openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt -days 365 -sha256
-// 
-// 6. Crear la clave privada del cliente
-// openssl genrsa -out client.key 2048
-// 
-// 7. Crear una solicitud de firma de certificado (CSR) del cliente
-// openssl req -new -key client.key -out client.csr -subj "/CN=client"
-// 
-// 8. Firmar el certificado del cliente con la CA
-// openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client.crt -days 365 -sha256
-// 
-// 9. Generar el archivo PKCS#12 (.pfx) para el servidor y el cliente
-// openssl pkcs12 -export -out server.pfx -inkey server.key -in server.crt -password pass:password
-// openssl pkcs12 -export -out client.pfx -inkey client.key -in client.crt -password pass:password
-
-
 
 namespace DemoServer
 {
@@ -50,35 +15,44 @@ namespace DemoServer
             // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
             builder.Services.AddOpenApi();
 
-            // Configuración de Kestrel para usar HTTPS y autenticación mTLS
-            builder.WebHost.ConfigureKestrel(options =>
+            builder.Services.Configure<KestrelServerOptions>(options =>
             {
-                options.ConfigureHttpsDefaults(httpsOptions =>
+                options.ConfigureHttpsDefaults(options =>
                 {
-                    httpsOptions.ServerCertificate = X509Certificate2.CreateFromPemFile("server.crt", "server.key");
-                    httpsOptions.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
-                    httpsOptions.AllowAnyClientCertificate();
+                    // Utilizamos el certificado del servicio 1
+                    options.ServerCertificate = X509Certificate2.CreateFromPemFile("server.crt", "server.key");
+                    // Configuramos el protocolo mTLS
+                    options.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
+                    // Aceptamos cualquier certificado de cliente porque relaizaremos la autenticación en el middleware de autenticación
+                    options.AllowAnyClientCertificate();
                 });
+
             });
 
-            builder.Services.AddAuthentication(CertificateAuthenticationDefaults.AuthenticationScheme)
-                .AddCertificate(options =>
-                {
-                    options.RevocationMode = X509RevocationMode.NoCheck;
-                    options.ValidateValidityPeriod = true;
-                    options.AllowedCertificateTypes = CertificateTypes.Chained;
-                    options.ChainTrustValidationMode = X509ChainTrustMode.CustomRootTrust;
 
-                    var rootCert = X509CertificateLoader.LoadCertificateFromFile("ca.crt");
-                    options.CustomTrustStore.Clear();
-                    options.CustomTrustStore.Add(rootCert);
-                });
-
-            builder.Services.AddAuthorization(options =>
+            builder.Services
+            .AddAuthorization(options =>
             {
+                // requiere autenticación para acceder a cualquier endpoint
                 options.FallbackPolicy = new AuthorizationPolicyBuilder()
                     .RequireAuthenticatedUser()
                     .Build();
+            })
+            .AddAuthentication(CertificateAuthenticationDefaults.AuthenticationScheme)
+            .AddCertificate(options =>
+            {
+                // ignoramos la revocación de los certificados
+                options.RevocationMode = X509RevocationMode.NoCheck;
+                // validamos la fecha de caducidad
+                options.ValidateValidityPeriod = true;
+                // validamos que el certificado sea de tipo chained
+                options.AllowedCertificateTypes = CertificateTypes.Chained;
+                // le indicamos que la cadena de confianza la vamos a especificar nosotros
+                options.ChainTrustValidationMode = X509ChainTrustMode.CustomRootTrust;
+                // añadimos la CA como raíz de confianza
+                var rootcert = new X509Certificate2("ca.crt");
+                options.CustomTrustStore.Clear();
+                options.CustomTrustStore.Add(rootcert);
             });
 
             var app = builder.Build();
@@ -93,60 +67,9 @@ namespace DemoServer
             app.UseAuthentication();
             app.UseAuthorization();
 
-            app.MapPost("/secure-data", async (HttpContext context) =>
-            {
-                if (context.Connection.ClientCertificate == null)
-                {
-                    return Results.BadRequest("No se proporcionó certificado de cliente");
-                }
-
-                // Descifrar y verificar la solicitud
-                var encryptedData = await context.Request.BodyReader.ReadAsync();
-                byte[] decryptedData = DecryptData(encryptedData.Buffer.ToArray(), "server.key");
-                bool isVerified = VerifySignature(decryptedData, "client.crt");
-                if (!isVerified)
-                {
-                    return Results.BadRequest("Firma inválida");
-                }
-
-                // Firmar y cifrar la respuesta
-                byte[] responseData = Encoding.UTF8.GetBytes("Datos seguros enviados");
-                byte[] signedResponse = SignData(responseData, "server.key");
-                byte[] encryptedResponse = EncryptData(signedResponse, "client.crt");
-
-                return Results.Bytes(encryptedResponse);
-            });
+            app.MapGet("/", () => "Hello World!");
 
             app.Run();
-        }
-
-        /* Funciones auxiliares */
-        static byte[] SignData(byte[] data, string privateKeyPath)
-        {
-            using RSA rsa = RSA.Create();
-            rsa.ImportFromPem(File.ReadAllText(privateKeyPath));
-            return rsa.SignData(data, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        }
-
-        static bool VerifySignature(byte[] data, string certPath)
-        {
-            using var cert = X509CertificateLoader.LoadCertificateFromFile(certPath);
-            using RSA rsa = cert.GetRSAPublicKey();
-            return rsa.VerifyData(data, data[^256..], HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        }
-
-        static byte[] EncryptData(byte[] data, string certPath)
-        {
-            using var cert = X509CertificateLoader.LoadCertificateFromFile(certPath);
-            using RSA rsa = cert.GetRSAPublicKey();
-            return rsa.Encrypt(data, RSAEncryptionPadding.OaepSHA256);
-        }
-
-        static byte[] DecryptData(byte[] data, string privateKeyPath)
-        {
-            using RSA rsa = RSA.Create();
-            rsa.ImportFromPem(File.ReadAllText(privateKeyPath));
-            return rsa.Decrypt(data, RSAEncryptionPadding.OaepSHA256);
         }
     }
 }

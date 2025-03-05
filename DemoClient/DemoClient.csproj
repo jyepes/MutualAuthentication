@@ -8,16 +8,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Update="ca.crt">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
     <None Update="client.crt">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
     <None Update="client.key">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </None>
-    <None Update="client.pfx">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </None>
-    <None Update="server.crt">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
     <None Update="service2.crt">
